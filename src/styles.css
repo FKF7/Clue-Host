@@ -184,12 +184,13 @@ textarea::placeholder { color: #adb1ae; }
 .guess-field.weapons > span { color: var(--weapon); }
 .guess-field.places > span { color: var(--place); }
 select { width: 100%; min-height: 3.05rem; padding: .6rem 2.2rem .6rem .75rem; border: 1px solid #cbd5e1; border-radius: .5rem; color: var(--ink); background: #fff; }
-.card-ownership { display: flex; align-items: center; gap: .35rem; min-height: 1rem; color: #607087; font-size: .65rem; font-weight: 700; }
+.card-ownership { display: flex; align-items: center; gap: .35rem; min-height: 1rem; padding-left: .25rem; color: #607087; font-size: .7rem; font-weight: 700; }
 .card-ownership:not(.empty)::before { content: ""; width: .38rem; height: .38rem; flex: 0 0 auto; border-radius: 50%; background: #6598bf; }
 .card-ownership.public { color: #806028; }
-.card-ownership.public::before { background: #b58a3d; }
 .card-ownership.case-file { color: #72588d; }
-.card-ownership.case-file::before { background: #80679c; }
+.guess-field.suspects .card-ownership::before { background: var(--suspect); }
+.guess-field.weapons .card-ownership::before { background: var(--weapon); }
+.guess-field.places .card-ownership::before { background: var(--place); }
 .public-card-notice { display: flex; align-items: center; gap: .7rem; margin-top: .8rem; padding: .65rem .8rem; border: 1px solid #d6c59f; border-radius: .5rem; color: #71582f; background: #fbf6e8; font-size: .74rem; }
 .public-card-notice strong { flex: 0 0 auto; font-size: .7rem; letter-spacing: .06em; text-transform: uppercase; }
 .public-card-notice span { color: #695f4c; }
