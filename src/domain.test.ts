@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  assignAnonymousHands,
   createCards,
+  createAnonymousDeal,
   createGameConfig,
   createPlayers,
   findDuplicates,
+  formatCardsForMessage,
   judgeGuess,
   nextActivePlayerIndex,
   parseList,
@@ -13,11 +16,11 @@ import {
   validateDistribution,
 } from "./domain";
 import { createExampleSession } from "./exampleGame";
-import type { Catalog } from "./types";
+import { categories, type Catalog } from "./types";
 
 const catalog: Catalog = {
   suspects: ["Alex", "Blake", "Casey", "Drew"],
-  weapons: ["Rope", "Knife", "Poison", "Candlestick", "Revolver"],
+  items: ["Rope", "Knife", "Poison", "Candlestick", "Revolver"],
   places: ["Kitchen", "Garden", "Lounge", "Study", "Garage", "Library"],
 };
 
@@ -28,6 +31,16 @@ describe("setup", () => {
 
   it("detects duplicate names without considering capitalization", () => {
     expect(findDuplicates(["Alex", "Blake", " alex ".trim()])).toEqual(["alex"]);
+  });
+
+  it("formats a hand for copying into a message", () => {
+    expect(
+      formatCardsForMessage([
+        { name: "Card 1" },
+        { name: "Card 2" },
+        { name: "Card 3" },
+      ]),
+    ).toBe("**Card 1**\n**Card 2**\n**Card 3**");
   });
 
   it("calculates the number of cards per player", () => {
@@ -47,21 +60,54 @@ describe("setup", () => {
     const players = createPlayers(catalog.suspects);
     const cards = createCards(catalog);
     const hands = Object.fromEntries(players.map((player) => [player.id, [] as string[]]));
-    const distributed = cards.filter((card) => !["suspects:0", "weapons:0", "places:0"].includes(card.id));
+    const distributed = cards.filter((card) => !["suspects:0", "items:0", "places:0"].includes(card.id));
     distributed.forEach((card, index) => hands[players[Math.floor(index / 3)].id].push(card.id));
 
     const result = validateDistribution(cards, players, hands, 3);
     expect(result.valid).toBe(true);
-    expect(result.caseFile.map((card) => card.id)).toEqual(["suspects:0", "weapons:0", "places:0"]);
+    expect(result.caseFile.map((card) => card.id)).toEqual(["suspects:0", "items:0", "places:0"]);
+  });
+
+  it("creates a complete anonymous deal with one crime card per category", () => {
+    const cards = createCards(catalog);
+    const deal = createAnonymousDeal(cards, 4, 3);
+    const caseCards = deal.caseFile.map(
+      (cardId) => cards.find((card) => card.id === cardId)!,
+    );
+    const allDealtCards = [...deal.caseFile, ...deal.hands.flat()];
+
+    expect(deal.hands).toHaveLength(4);
+    expect(deal.hands.every((hand) => hand.length === 3)).toBe(true);
+    expect(new Set(allDealtCards).size).toBe(cards.length);
+    expect(categories.map(
+      (category) => caseCards.filter((card) => card.category === category).length,
+    )).toEqual([1, 1, 1]);
+  });
+
+  it("assigns every anonymous hand to exactly one player", () => {
+    const players = createPlayers(catalog.suspects);
+    const anonymousHands = [
+      ["suspects:0", "items:0", "places:0"],
+      ["suspects:1", "items:1", "places:1"],
+      ["suspects:2", "items:2", "places:2"],
+      ["suspects:3", "items:3", "places:3"],
+    ];
+    const assignment = assignAnonymousHands(players, anonymousHands);
+    const assignedHands = players.map((player) => assignment.hands[player.id]);
+
+    expect(new Set(Object.values(assignment.handNumbers))).toEqual(new Set([1, 2, 3, 4]));
+    expect(assignedHands.map((hand) => hand.join("|")).sort()).toEqual(
+      anonymousHands.map((hand) => hand.join("|")).sort(),
+    );
   });
 
   it("keeps each hand with its player when turn order is changed after dealing", () => {
     const players = createPlayers(catalog.suspects);
     const hands: Record<string, string[]> = {
-      [players[0].id]: ["suspects:1", "weapons:1", "places:1"],
-      [players[1].id]: ["suspects:2", "weapons:2", "places:2"],
-      [players[2].id]: ["suspects:3", "weapons:3", "places:3"],
-      [players[3].id]: ["weapons:4", "places:4", "places:5"],
+      [players[0].id]: ["suspects:1", "items:1", "places:1"],
+      [players[1].id]: ["suspects:2", "items:2", "places:2"],
+      [players[2].id]: ["suspects:3", "items:3", "places:3"],
+      [players[3].id]: ["items:4", "places:4", "places:5"],
     };
     const reorderedPlayers = [players[2], players[0], players[1], players[3]];
     const config = createGameConfig(catalog, reorderedPlayers, hands, 3);
@@ -74,7 +120,7 @@ describe("setup", () => {
     ]);
     expect(config.hands[players[0].id]).toEqual([
       "suspects:1",
-      "weapons:1",
+      "items:1",
       "places:1",
     ]);
   });
@@ -84,35 +130,35 @@ describe("judge", () => {
   it("selects the first player in circular order who can answer", () => {
     const players = createPlayers(catalog.suspects);
     const hands: Record<string, string[]> = {
-      [players[0].id]: ["suspects:1", "weapons:1", "places:1"],
-      [players[1].id]: ["suspects:2", "weapons:2", "places:2"],
-      [players[2].id]: ["suspects:3", "weapons:3", "places:3"],
-      [players[3].id]: ["weapons:4", "places:4", "places:5"],
+      [players[0].id]: ["suspects:1", "items:1", "places:1"],
+      [players[1].id]: ["suspects:2", "items:2", "places:2"],
+      [players[2].id]: ["suspects:3", "items:3", "places:3"],
+      [players[3].id]: ["items:4", "places:4", "places:5"],
     };
     const config = createGameConfig(catalog, players, hands, 3);
 
     expect(
       judgeGuess(config, 3, {
         suspects: "suspects:2",
-        weapons: "weapons:2",
+        items: "items:2",
         places: "places:4",
       }),
-    ).toEqual({ responderId: players[1].id, possibleCardIds: ["suspects:2", "weapons:2"] });
+    ).toEqual({ responderId: players[1].id, possibleCardIds: ["suspects:2", "items:2"] });
   });
 
   it("returns no responder when no hand contains a guessed card", () => {
     const players = createPlayers(catalog.suspects);
     const hands: Record<string, string[]> = {
-      [players[0].id]: ["suspects:1", "weapons:1", "places:1"],
-      [players[1].id]: ["suspects:2", "weapons:2", "places:2"],
-      [players[2].id]: ["suspects:3", "weapons:3", "places:3"],
-      [players[3].id]: ["weapons:4", "places:4", "places:5"],
+      [players[0].id]: ["suspects:1", "items:1", "places:1"],
+      [players[1].id]: ["suspects:2", "items:2", "places:2"],
+      [players[2].id]: ["suspects:3", "items:3", "places:3"],
+      [players[3].id]: ["items:4", "places:4", "places:5"],
     };
     const config = createGameConfig(catalog, players, hands, 3);
     expect(
       judgeGuess(config, 0, {
         suspects: "suspects:0",
-        weapons: "weapons:0",
+        items: "items:0",
         places: "places:0",
       }),
     ).toEqual({ responderId: null, possibleCardIds: [] });
@@ -134,7 +180,7 @@ describe("judge", () => {
     expect(
       judgeGuess(config, 0, {
         suspects: cardId("Discenti"),
-        weapons: cardId("MP3"),
+        items: cardId("MP3"),
         places: cardId("Snow Forts"),
       }),
     ).toEqual({

@@ -6,7 +6,7 @@ app identifies who must respond to each guess and which cards they can show.
 
 ## Features
 
-- Guided setup for suspects, weapons, places, hands, and turn order
+- Guided setup for suspects, items, places, hands, and turn order
 - Automatic identification of the three case-file cards
 - Response calculation based on player order and card ownership
 - Support for eliminated players and public cards

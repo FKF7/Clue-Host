@@ -1,4 +1,4 @@
-export const categories = ["suspects", "weapons", "places"] as const;
+export const categories = ["suspects", "items", "places"] as const;
 
 export type Category = (typeof categories)[number];
 
@@ -27,7 +27,7 @@ export type GameConfig = {
 
 export type Guess = {
   suspects: string;
-  weapons: string;
+  items: string;
   places: string;
 };
 

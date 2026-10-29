@@ -1,19 +1,23 @@
 import { useEffect, useMemo, useRef, useState, type Ref } from "react";
 import {
+  assignAnonymousHands,
   cardById,
   categoryLabels,
+  createAnonymousDeal,
   createCards,
   createGameConfig,
   createPlayers,
+  formatCardsForMessage,
   isPlayerActive,
   judgeGuess,
-  moveItem,
+  moveEntry,
   nextActivePlayerIndex,
   parseList,
   removePlayerFromGame,
   undoLastGameEvent,
   validateCatalog,
   validateDistribution,
+  type AnonymousDeal,
 } from "./domain";
 import { clearSession, readSession, saveSession } from "./storage";
 import { createExampleSession } from "./exampleGame";
@@ -32,13 +36,13 @@ import { categories } from "./types";
 
 const emptyTexts: Record<Category, string> = {
   suspects: "",
-  weapons: "",
+  items: "",
   places: "",
 };
 
 const categorySingular: Record<Category, string> = {
   suspects: "Suspect",
-  weapons: "Weapon",
+  items: "Item",
   places: "Place",
 };
 
@@ -47,18 +51,68 @@ const alphabeticalCollator = new Intl.Collator("en", {
   numeric: true,
 });
 
-function Icon({ name }: { name: "up" | "down" | "back" | "forward" | "close" }) {
+function Icon({ name }: { name: "up" | "down" | "back" | "forward" | "close" | "copy" | "check" }) {
   const paths = {
     up: "m7 14 5-5 5 5",
     down: "m7 10 5 5 5-5",
     back: "m15 18-6-6 6-6",
     forward: "m9 18 6-6-6-6",
     close: "m7 7 10 10M17 7 7 17",
+    copy: "M9 9h10v10H9zM5 15H4V5h10v1",
+    check: "m5 12 4 4L19 6",
   };
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <path d={paths[name]} />
     </svg>
+  );
+}
+
+async function copyText(text: string) {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+  } catch {
+    // File URLs may not receive Clipboard API permission. Use the local fallback below.
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  textarea.remove();
+  if (!copied) throw new Error("Copy failed.");
+}
+
+function CopyCardsButton({ cards, compact = false }: { cards: Card[]; compact?: boolean }) {
+  const [copied, setCopied] = useState(false);
+
+  async function copyCards() {
+    try {
+      await copyText(formatCardsForMessage(cards));
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1800);
+    } catch {
+      window.alert("The cards could not be copied. Please try again.");
+    }
+  }
+
+  return (
+    <button
+      className={`copy-cards-button ${compact ? "compact" : ""} ${copied ? "copied" : ""}`}
+      type="button"
+      onClick={copyCards}
+      aria-label={copied ? "Cards copied" : "Copy cards"}
+    >
+      <Icon name={copied ? "check" : "copy"} />
+      <span>{copied ? "Copied" : "Copy cards"}</span>
+    </button>
   );
 }
 
@@ -89,22 +143,39 @@ function AppHeader() {
   );
 }
 
+function AppFooter() {
+  return (
+    <footer className="app-footer">
+      <span>Made by <strong>FKF7</strong></span>
+    </footer>
+  );
+}
+
 type SetupProps = {
   onComplete: (session: GameSession) => void;
+};
+
+type DealLocation = "case-file" | number;
+
+type DealCardSelection = {
+  cardId: string;
+  location: DealLocation;
 };
 
 function Setup({ onComplete }: SetupProps) {
   const [step, setStep] = useState(0);
   const [texts, setTexts] = useState<Record<Category, string>>(emptyTexts);
   const [players, setPlayers] = useState<Player[]>([]);
+  const [anonymousDeal, setAnonymousDeal] = useState<AnonymousDeal | null>(null);
   const [hands, setHands] = useState<Record<string, string[]>>({});
-  const [selectedPlayerId, setSelectedPlayerId] = useState("");
+  const [handNumbers, setHandNumbers] = useState<Record<string, number>>({});
+  const [selectedDealCard, setSelectedDealCard] = useState<DealCardSelection | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const catalog = useMemo<Catalog>(
     () => ({
       suspects: parseList(texts.suspects),
-      weapons: parseList(texts.weapons),
+      items: parseList(texts.items),
       places: parseList(texts.places),
     }),
     [texts],
@@ -119,17 +190,25 @@ function Setup({ onComplete }: SetupProps) {
     [cards, hands, players, validation.cardsPerPlayer],
   );
 
-  const assignedOwner = useMemo(() => {
-    const result = new Map<string, string>();
-    for (const player of players) {
-      for (const cardId of hands[player.id] ?? []) result.set(cardId, player.id);
-    }
-    return result;
-  }, [hands, players]);
   const alphabeticalPlayers = useMemo(
     () => [...players].sort((left, right) => alphabeticalCollator.compare(left.name, right.name)),
     [players],
   );
+
+  function orderedCards(cardIds: string[]) {
+    return cardIds
+      .map((cardId) => cards.find((card) => card.id === cardId))
+      .filter((card): card is Card => Boolean(card))
+      .sort((left, right) => {
+        const categoryDifference = categories.indexOf(left.category) - categories.indexOf(right.category);
+        return categoryDifference || alphabeticalCollator.compare(left.name, right.name);
+      });
+  }
+
+  function generateDeal() {
+    if (validation.cardsPerPlayer === null) return null;
+    return createAnonymousDeal(cards, players.length || catalog.suspects.length, validation.cardsPerPlayer);
+  }
 
   function continueFromCatalog() {
     if (!validation.valid || validation.cardsPerPlayer === null) {
@@ -139,42 +218,73 @@ function Setup({ onComplete }: SetupProps) {
     const nextPlayers = createPlayers(
       [...catalog.suspects].sort((left, right) => alphabeticalCollator.compare(left, right)),
     );
+    const nextDeal = createAnonymousDeal(cards, nextPlayers.length, validation.cardsPerPlayer);
     setPlayers(nextPlayers);
-    setHands(Object.fromEntries(nextPlayers.map((player) => [player.id, []])));
-    setSelectedPlayerId(nextPlayers[0]?.id ?? "");
+    setAnonymousDeal(nextDeal);
+    setHands({});
+    setHandNumbers({});
+    setSelectedDealCard(null);
     setError(null);
     setStep(1);
   }
 
-  function continueFromHands() {
-    if (!distribution?.valid) {
-      setError(distribution?.errors[0] ?? "Finish dealing the cards.");
-      return;
-    }
+  function redealEverything() {
+    if (!window.confirm("Replace the current deal with a completely new random deal?")) return;
+    const nextDeal = generateDeal();
+    if (!nextDeal) return;
+    setAnonymousDeal(nextDeal);
+    setSelectedDealCard(null);
     setError(null);
-    setStep(2);
   }
 
-  function toggleCard(cardId: string) {
-    if (!selectedPlayerId || validation.cardsPerPlayer === null) return;
-    const ownerId = assignedOwner.get(cardId);
-    setHands((current) => {
-      if (ownerId === selectedPlayerId) {
-        return {
-          ...current,
-          [selectedPlayerId]: current[selectedPlayerId].filter((id) => id !== cardId),
-        };
-      }
-      if (ownerId) return current;
-      if ((current[selectedPlayerId]?.length ?? 0) >= validation.cardsPerPlayer!) {
-        return current;
-      }
-      return {
-        ...current,
-        [selectedPlayerId]: [...(current[selectedPlayerId] ?? []), cardId],
-      };
-    });
+  function selectDealCard(cardId: string, location: DealLocation) {
+    if (!anonymousDeal) return;
+    if (!selectedDealCard) {
+      setSelectedDealCard({ cardId, location });
+      setError(null);
+      return;
+    }
+    if (selectedDealCard.cardId === cardId) {
+      setSelectedDealCard(null);
+      return;
+    }
+    if (selectedDealCard.location === location) {
+      setSelectedDealCard({ cardId, location });
+      setError(null);
+      return;
+    }
+
+    const selectedCard = cards.find((card) => card.id === selectedDealCard.cardId);
+    const targetCard = cards.find((card) => card.id === cardId);
+    const involvesCaseFile = selectedDealCard.location === "case-file" || location === "case-file";
+    if (!selectedCard || !targetCard) return;
+    if (involvesCaseFile && selectedCard.category !== targetCard.category) {
+      setError("A case-file card can only be exchanged for a card from the same category.");
+      return;
+    }
+
+    const nextCaseFile = [...anonymousDeal.caseFile];
+    const nextHands = anonymousDeal.hands.map((hand) => [...hand]);
+    const replaceCard = (source: DealLocation, oldCardId: string, newCardId: string) => {
+      const collection = source === "case-file" ? nextCaseFile : nextHands[source];
+      const cardIndex = collection.indexOf(oldCardId);
+      if (cardIndex >= 0) collection[cardIndex] = newCardId;
+    };
+    replaceCard(selectedDealCard.location, selectedDealCard.cardId, cardId);
+    replaceCard(location, cardId, selectedDealCard.cardId);
+    setAnonymousDeal({ caseFile: nextCaseFile, hands: nextHands });
+    setSelectedDealCard(null);
     setError(null);
+  }
+
+  function assignHands() {
+    if (!anonymousDeal) return;
+    const assignment = assignAnonymousHands(players, anonymousDeal.hands);
+    setHands(assignment.hands);
+    setHandNumbers(assignment.handNumbers);
+    setSelectedDealCard(null);
+    setError(null);
+    setStep(2);
   }
 
   function finishSetup() {
@@ -190,21 +300,45 @@ function Setup({ onComplete }: SetupProps) {
     }
   }
 
-  const selectedPlayer = players.find((player) => player.id === selectedPlayerId);
-  const assignedCount = assignedOwner.size;
-  const expectedAssigned =
-    validation.cardsPerPlayer === null ? 0 : validation.cardsPerPlayer * players.length;
+  function renderDealCard(card: Card, location: DealLocation) {
+    const selected = selectedDealCard?.cardId === card.id;
+    const selectedCard = selectedDealCard
+      ? cards.find((candidate) => candidate.id === selectedDealCard.cardId)
+      : null;
+    const differentLocation = selectedDealCard && selectedDealCard.location !== location;
+    const involvesCaseFile =
+      selectedDealCard &&
+      differentLocation &&
+      (selectedDealCard.location === "case-file" || location === "case-file");
+    const incompatible = Boolean(
+      selectedCard && involvesCaseFile && selectedCard.category !== card.category,
+    );
+    return (
+      <button
+        className={`deal-card ${card.category} ${selected ? "selected" : ""}`}
+        type="button"
+        key={card.id}
+        disabled={incompatible}
+        aria-pressed={selected}
+        onClick={() => selectDealCard(card.id, location)}
+        title={incompatible ? "Case-file swaps must use the same category." : undefined}
+      >
+        <small>{categorySingular[card.category]}</small>
+        <strong>{card.name}</strong>
+      </button>
+    );
+  }
 
   return (
     <main className="setup-page page-shell">
       <section className="setup-intro">
         <span className="eyebrow">PREPARE THE TABLE</span>
         <h1>Set up your game</h1>
-        <p>Add the deck, deal every hand, and set the turn order. The case file will be identified automatically.</p>
+        <p>Add the deck, prepare the hands, assign them to players, and set the turn order.</p>
       </section>
 
       <ol className="stepper" aria-label="Setup steps">
-        {["Deck", "Hands", "Turn order"].map((label, index) => (
+        {["Deck", "Prepare deal", "Assign hands", "Turn order"].map((label, index) => (
           <li key={label} className={`${index === step ? "active" : ""} ${index < step ? "done" : ""}`}>
             <span>{index < step ? "✓" : index + 1}</span>
             <div><small>STEP {index + 1}</small><strong>{label}</strong></div>
@@ -244,10 +378,10 @@ function Setup({ onComplete }: SetupProps) {
                     }}
                     placeholder={
                       category === "suspects"
-                        ? "Alex\nBlake\nCasey"
-                        : category === "weapons"
-                          ? "Rope\nKnife\nPoison"
-                          : "Kitchen\nLibrary\nGarden"
+                        ? "FKF\nCaustic\nOmars31609\nJGMC32"
+                        : category === "items"
+                          ? "Surfboard\nKeytar\nIce Cream Cone\nVuvuzela"
+                          : "Arcade\nLighthouse\nStadium\nCove"
                     }
                     spellCheck="false"
                   />
@@ -257,7 +391,7 @@ function Setup({ onComplete }: SetupProps) {
 
             <div className={`setup-summary ${validation.valid ? "valid" : ""}`}>
               <div className="summary-stat"><strong>{catalog.suspects.length}</strong><span>players<br />and suspects</span></div>
-              <div className="summary-stat"><strong>{catalog.weapons.length}</strong><span>weapons</span></div>
+              <div className="summary-stat"><strong>{catalog.items.length}</strong><span>items</span></div>
               <div className="summary-stat"><strong>{catalog.places.length}</strong><span>places</span></div>
               <div className="summary-stat"><strong>{validation.totalCards}</strong><span>cards<br />in total</span></div>
               <div className="summary-result">
@@ -272,7 +406,7 @@ function Setup({ onComplete }: SetupProps) {
           </>
         )}
 
-        {step === 2 && (
+        {step === 3 && (
           <>
             <div className="section-heading">
               <h2>What is the turn order?</h2>
@@ -283,18 +417,19 @@ function Setup({ onComplete }: SetupProps) {
                 <li key={player.id}>
                   <span className="order-number">{index + 1}</span>
                   <strong>{player.name}</strong>
+                  <CopyCardsButton cards={orderedCards(hands[player.id] ?? [])} compact />
                   <div className="order-controls">
                     <button
                       type="button"
                       aria-label={`Move ${player.name} up`}
                       disabled={index === 0}
-                      onClick={() => setPlayers((current) => moveItem(current, index, index - 1))}
+                      onClick={() => setPlayers((current) => moveEntry(current, index, index - 1))}
                     ><Icon name="up" /></button>
                     <button
                       type="button"
                       aria-label={`Move ${player.name} down`}
                       disabled={index === players.length - 1}
-                      onClick={() => setPlayers((current) => moveItem(current, index, index + 1))}
+                      onClick={() => setPlayers((current) => moveEntry(current, index, index + 1))}
                     ><Icon name="down" /></button>
                   </div>
                 </li>
@@ -303,95 +438,108 @@ function Setup({ onComplete }: SetupProps) {
           </>
         )}
 
-        {step === 1 && validation.cardsPerPlayer !== null && (
+        {step === 1 && validation.cardsPerPlayer !== null && anonymousDeal && (
           <>
             <div className="section-heading split-heading">
               <div>
-                <h2>Deal the hands</h2>
-                <p>Select a player, then choose every card they received.</p>
+                <h2>Prepare the hands</h2>
+                <p>Review the random deal and select two cards to exchange them.</p>
               </div>
-              <div className="distribution-progress">
-                <strong>{assignedCount}/{expectedAssigned}</strong>
-                <span>cards dealt</span>
-              </div>
+              <button className="text-button" type="button" onClick={redealEverything}>
+                Redeal everything
+              </button>
             </div>
 
-            <div className="distribution-layout">
-              <aside className="player-selector" aria-label="Players">
-                {alphabeticalPlayers.map((player) => {
-                  const handCount = hands[player.id]?.length ?? 0;
-                  return (
-                    <button
-                      type="button"
-                      key={player.id}
-                      className={selectedPlayerId === player.id ? "selected" : ""}
-                      onClick={() => setSelectedPlayerId(player.id)}
-                    >
-                      <span className="avatar">{player.name.slice(0, 1).toLocaleUpperCase("en")}</span>
-                      <span><strong>{player.name}</strong><small>{handCount} of {validation.cardsPerPlayer} cards</small></span>
-                      <span className={`hand-status ${handCount === validation.cardsPerPlayer ? "complete" : ""}`}>
-                        {handCount === validation.cardsPerPlayer ? "✓" : handCount}
-                      </span>
-                    </button>
-                  );
-                })}
-              </aside>
+            <div className={`swap-guidance ${selectedDealCard ? "active" : ""}`} aria-live="polite">
+              <span>{selectedDealCard ? "1" : "↔"}</span>
+              <p>
+                {selectedDealCard
+                  ? "Now select a card in another hand to exchange it. Case-file swaps must use the same category."
+                  : "Select any card, then select a card in another hand to swap their positions."}
+              </p>
+              {selectedDealCard && (
+                <button type="button" onClick={() => setSelectedDealCard(null)}>Cancel selection</button>
+              )}
+            </div>
 
-              <div className="card-assignment">
-                <div className="selected-player-heading">
-                  <div>
-                    <span>HAND OF</span>
-                    <h3>{selectedPlayer?.name}</h3>
-                  </div>
-                  <strong>{hands[selectedPlayerId]?.length ?? 0}/{validation.cardsPerPlayer}</strong>
-                </div>
-                {categories.map((category) => (
-                  <div className="card-category" key={category}>
-                    <h4>{categoryLabels[category]}</h4>
-                    <div className="card-grid">
-                      {[...cards]
-                        .filter((card) => card.category === category)
-                        .sort((left, right) => alphabeticalCollator.compare(left.name, right.name))
-                        .map((card) => {
-                        const ownerId = assignedOwner.get(card.id);
-                        const isSelected = ownerId === selectedPlayerId;
-                        const owner = players.find((player) => player.id === ownerId);
-                        const selectedHandIsFull =
-                          (hands[selectedPlayerId]?.length ?? 0) >= validation.cardsPerPlayer!;
-                        return (
-                          <button
-                            type="button"
-                            className={`card-chip ${category} ${isSelected ? "selected" : ""} ${ownerId && !isSelected ? "assigned" : ""}`}
-                            key={card.id}
-                            disabled={Boolean(
-                              (ownerId && !isSelected) ||
-                              (!ownerId && selectedHandIsFull),
-                            )}
-                            onClick={() => toggleCard(card.id)}
-                            title={owner && !isSelected ? `${owner.name}'s card` : undefined}
-                          >
-                            <span>{card.name}</span>
-                            {isSelected && <b>✓</b>}
-                            {owner && !isSelected && <small>{owner.name}</small>}
-                          </button>
-                        );
-                        })}
-                    </div>
-                  </div>
-                ))}
-                <div className={`case-file-preview ${distribution?.valid ? "ready" : ""}`}>
-                  <span className="case-icon">?</span>
-                  <div className="case-file-preview-content">
-                    <strong>Case file</strong>
-                    <p>
-                      {distribution?.valid
-                        ? "These three undealt cards form the crime."
-                        : `${cards.length - assignedCount} card(s) are still unassigned. Exactly three must remain at the end.`}
-                    </p>
-                    {distribution?.valid && <CaseFileCards cards={distribution.caseFile} />}
-                  </div>
+            <section className="anonymous-case-file" aria-labelledby="anonymous-case-title">
+              <div>
+                <span className="case-icon">?</span>
+                <div>
+                  <small>THE CRIME</small>
+                  <h3 id="anonymous-case-title">Case file</h3>
                 </div>
               </div>
+              <div className="deal-card-list">
+                {categories.flatMap((category) =>
+                  orderedCards(anonymousDeal.caseFile)
+                    .filter((card) => card.category === category)
+                    .map((card) => renderDealCard(card, "case-file")),
+                )}
+              </div>
+            </section>
+
+            <div className="anonymous-hands-grid">
+              {anonymousDeal.hands.map((hand, handIndex) => {
+                const handCards = orderedCards(hand);
+                return (
+                  <article className="anonymous-hand" key={handIndex}>
+                    <header>
+                      <div>
+                        <small>PREPARED HAND</small>
+                        <h3>Hand {handIndex + 1}</h3>
+                      </div>
+                      <div className="hand-balance" aria-label={`Category counts for hand ${handIndex + 1}`}>
+                        {categories.map((category) => (
+                          <span className={category} key={category} title={categoryLabels[category]}>
+                            {handCards.filter((card) => card.category === category).length}
+                          </span>
+                        ))}
+                      </div>
+                    </header>
+                    <div className="deal-card-list">
+                      {handCards.map((card) => renderDealCard(card, handIndex))}
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          </>
+        )}
+
+        {step === 2 && anonymousDeal && (
+          <>
+            <div className="section-heading assignment-heading">
+              <h2>Hands assigned</h2>
+              <p>Each prepared hand has been randomly assigned to a player.</p>
+            </div>
+
+            <div className="locked-case-file">
+              <div><small>CASE FILE</small><strong>Crime cards</strong></div>
+              <CaseFileCards cards={orderedCards(anonymousDeal.caseFile)} />
+            </div>
+
+            <div className="assigned-hands-grid">
+              {alphabeticalPlayers.map((player) => (
+                <article className="assigned-hand" key={player.id}>
+                  <header>
+                    <span className="avatar">{player.name.slice(0, 1).toLocaleUpperCase("en")}</span>
+                    <div>
+                      <small>PREPARED HAND {handNumbers[player.id]}</small>
+                      <h3>{player.name}</h3>
+                    </div>
+                    <CopyCardsButton cards={orderedCards(hands[player.id] ?? [])} />
+                  </header>
+                  <div className="assigned-card-list">
+                    {orderedCards(hands[player.id] ?? []).map((card) => (
+                      <span className={`hand-card ${card.category}`} key={card.id}>
+                        <small>{categorySingular[card.category]}</small>
+                        {card.name}
+                      </span>
+                    ))}
+                  </div>
+                </article>
+              ))}
             </div>
           </>
         )}
@@ -399,18 +547,32 @@ function Setup({ onComplete }: SetupProps) {
         {error && <p className="error-banner" role="alert">{error}</p>}
 
         <footer className="setup-actions">
-          {step > 0 && (
-            <button className="ghost-button" type="button" onClick={() => { setStep((current) => current - 1); setError(null); }}>
+          {(step === 1 || step === 3) && (
+            <button className="ghost-button" type="button" onClick={() => { setStep(step === 1 ? 0 : 2); setError(null); }}>
               Back
             </button>
           )}
           <button
             className="primary-button"
             type="button"
-            disabled={step === 0 && !validation.valid}
-            onClick={step === 0 ? continueFromCatalog : step === 1 ? continueFromHands : finishSetup}
+            disabled={(step === 0 && !validation.valid) || (step === 1 && !anonymousDeal)}
+            onClick={
+              step === 0
+                ? continueFromCatalog
+                : step === 1
+                  ? assignHands
+                  : step === 2
+                    ? () => setStep(3)
+                    : finishSetup
+            }
           >
-            {step === 2 ? "Start game" : "Continue"}
+            {step === 1
+              ? "Assign hands"
+              : step === 2
+                ? "Continue to turn order"
+                : step === 3
+                  ? "Start game"
+                  : "Continue"}
             <Icon name="forward" />
           </button>
         </footer>
@@ -462,7 +624,7 @@ function Game({
   onChange: (session: GameSession) => void;
   onNewGame: () => void;
 }) {
-  const [guess, setGuess] = useState<Guess>({ suspects: "", weapons: "", places: "" });
+  const [guess, setGuess] = useState<Guess>({ suspects: "", items: "", places: "" });
   const [openPanel, setOpenPanel] = useState<"hands" | "history" | null>(null);
   const suspectSelectRef = useRef<HTMLSelectElement>(null);
   const { config, currentPlayerIndex } = session;
@@ -500,7 +662,7 @@ function Game({
   function changeTurn(direction: -1 | 1) {
     const nextIndex = nextActivePlayerIndex(config.players, currentPlayerIndex, direction);
     if (nextIndex < 0) return;
-    setGuess({ suspects: "", weapons: "", places: "" });
+    setGuess({ suspects: "", items: "", places: "" });
     onChange({ ...session, currentPlayerIndex: nextIndex });
   }
 
@@ -517,7 +679,7 @@ function Game({
     };
     const nextIndex = nextActivePlayerIndex(config.players, currentPlayerIndex);
     onChange({ ...session, currentPlayerIndex: nextIndex, history: [...session.history, record] });
-    setGuess({ suspects: "", weapons: "", places: "" });
+    setGuess({ suspects: "", items: "", places: "" });
     window.requestAnimationFrame(() => suspectSelectRef.current?.focus());
   }
 
@@ -526,7 +688,7 @@ function Game({
     const undone = undoLastGameEvent(session);
     onChange(undone.session);
     if (lastEvent?.type === "guess") {
-      setGuess(undone.restoredGuess ?? { suspects: "", weapons: "", places: "" });
+      setGuess(undone.restoredGuess ?? { suspects: "", items: "", places: "" });
     }
     setOpenPanel(null);
     window.requestAnimationFrame(() => suspectSelectRef.current?.focus());
@@ -550,7 +712,7 @@ function Game({
     }
 
     if (currentPlayer.id === playerId) {
-      setGuess({ suspects: "", weapons: "", places: "" });
+      setGuess({ suspects: "", items: "", places: "" });
     }
     onChange(removePlayerFromGame(session, playerId));
   }
@@ -693,7 +855,11 @@ function Game({
               <>
                 <p className="panel-intro">Every dealt card, grouped by player.</p>
                 <ol className="hands-overview">
-                  {config.players.map((player, playerIndex) => (
+                  {config.players.map((player, playerIndex) => {
+                    const playerCards = (config.hands[player.id] ?? [])
+                      .map((cardId) => cardById(config, cardId))
+                      .filter((card): card is Card => Boolean(card));
+                    return (
                     <li className={!isPlayerActive(player) ? "player-out" : ""} key={player.id}>
                       <div className="hand-player">
                         <span className="avatar">{player.name.slice(0, 1).toLocaleUpperCase("en")}</span>
@@ -703,6 +869,7 @@ function Game({
                           {!isPlayerActive(player) && <em>OUT · CARDS PUBLIC</em>}
                         </div>
                         <span className="hand-count">{config.hands[player.id]?.length ?? 0}</span>
+                        <CopyCardsButton cards={playerCards} compact />
                         {isPlayerActive(player) && (
                           <button
                             className="player-state-button remove"
@@ -727,7 +894,8 @@ function Game({
                         })}
                       </div>
                     </li>
-                  ))}
+                    );
+                  })}
                 </ol>
               </>
             ) : (
@@ -824,6 +992,7 @@ export default function App() {
       ) : (
         <Setup onComplete={setSession} />
       )}
+      <AppFooter />
     </div>
   );
 }

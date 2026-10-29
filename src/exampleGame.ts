@@ -15,7 +15,7 @@ export const exampleCatalog: Catalog = {
     "Omars",
     "Tumgu",
   ],
-  weapons: [
+  items: [
     "Cactus",
     "Electric Guitar",
     "Fluffy Stuffie",
@@ -51,57 +51,57 @@ type NamedCard = [category: Category, name: string];
 const exampleHands: Record<string, NamedCard[]> = {
   Lucy: [
     ["suspects", "Rosie"],
-    ["weapons", "Surfboard"],
+    ["items", "Surfboard"],
     ["places", "Dance Club"],
   ],
   Discenti: [
     ["suspects", "Caustic"],
-    ["weapons", "MP3"],
+    ["items", "MP3"],
     ["places", "Town"],
   ],
   Caustic: [
     ["suspects", "Discenti"],
-    ["weapons", "Handbag"],
+    ["items", "Handbag"],
     ["places", "Stadium"],
   ],
   Ron: [
     ["suspects", "Storm"],
-    ["weapons", "Cactus"],
+    ["items", "Cactus"],
     ["places", "Plaza"],
   ],
   Rosie: [
     ["suspects", "Lucy"],
-    ["weapons", "Giant Popsicle"],
+    ["items", "Giant Popsicle"],
     ["places", "Book Room"],
   ],
   JGMC: [
     ["suspects", "Doogie"],
-    ["weapons", "Lollipop"],
+    ["items", "Lollipop"],
     ["places", "Iceberg"],
   ],
   Doogie: [
     ["suspects", "Tumgu"],
-    ["weapons", "Electric Guitar"],
+    ["items", "Electric Guitar"],
     ["places", "Dojo"],
   ],
   Storm: [
-    ["weapons", "Wizard Staff"],
+    ["items", "Wizard Staff"],
     ["places", "Box Dimension"],
     ["places", "Ski Lodge"],
   ],
   FKF: [
     ["suspects", "Ron"],
-    ["weapons", "Fluffy Stuffie"],
+    ["items", "Fluffy Stuffie"],
     ["places", "Mine"],
   ],
   Omars: [
     ["suspects", "FKF"],
-    ["weapons", "Vase"],
+    ["items", "Vase"],
     ["places", "Beach"],
   ],
   Tumgu: [
     ["suspects", "JGMC"],
-    ["weapons", "Ninja Belt"],
+    ["items", "Ninja Belt"],
     ["places", "Cove"],
   ],
 };

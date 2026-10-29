@@ -11,7 +11,7 @@ import {
 
 export const categoryLabels = {
   suspects: "Suspects",
-  weapons: "Weapons",
+  items: "Items",
   places: "Places",
 } as const;
 
@@ -56,7 +56,7 @@ export function validateCatalog(catalog: Catalog): CatalogValidation {
 
   for (const category of categories) {
     if (catalog[category].length === 0) {
-      errors.push(`Add at least one item to ${categoryLabels[category]}.`);
+      errors.push(`Add at least one card to ${categoryLabels[category]}.`);
     }
     const duplicates = findDuplicates(catalog[category]);
     if (duplicates.length > 0) {
@@ -91,7 +91,7 @@ export function validateCatalog(catalog: Catalog): CatalogValidation {
   };
 }
 
-export function moveItem<T>(values: T[], from: number, to: number) {
+export function moveEntry<T>(values: T[], from: number, to: number) {
   if (
     from < 0 ||
     from >= values.length ||
@@ -137,6 +137,89 @@ export function createCards(catalog: Catalog): Card[] {
       name,
     })),
   );
+}
+
+export function formatCardsForMessage(cards: Pick<Card, "name">[]) {
+  return cards.map((card) => `**${card.name}**`).join("\n");
+}
+
+function secureRandomIndex(length: number) {
+  if (!Number.isInteger(length) || length <= 0) {
+    throw new Error("A positive collection length is required for random selection.");
+  }
+  const range = 0x1_0000_0000;
+  const limit = range - (range % length);
+  const buffer = new Uint32Array(1);
+  let value = limit;
+  while (value >= limit) {
+    globalThis.crypto.getRandomValues(buffer);
+    value = buffer[0];
+  }
+  return value % length;
+}
+
+function secureShuffle<T>(values: readonly T[]) {
+  const shuffled = [...values];
+  for (let index = shuffled.length - 1; index > 0; index -= 1) {
+    const target = secureRandomIndex(index + 1);
+    [shuffled[index], shuffled[target]] = [shuffled[target], shuffled[index]];
+  }
+  return shuffled;
+}
+
+export type AnonymousDeal = {
+  caseFile: string[];
+  hands: string[][];
+};
+
+export function createAnonymousDeal(
+  cards: Card[],
+  playerCount: number,
+  cardsPerPlayer: number,
+): AnonymousDeal {
+  const caseFile = categories.map((category) => {
+    const categoryCards = cards.filter((card) => card.category === category);
+    if (categoryCards.length === 0) {
+      throw new Error(`The deck has no ${categoryLabels[category].toLocaleLowerCase("en")} cards.`);
+    }
+    return categoryCards[secureRandomIndex(categoryCards.length)].id;
+  });
+  const caseFileSet = new Set(caseFile);
+  const remainingCards = secureShuffle(
+    cards.filter((card) => !caseFileSet.has(card.id)).map((card) => card.id),
+  );
+
+  if (remainingCards.length !== playerCount * cardsPerPlayer) {
+    throw new Error("The remaining cards cannot be divided equally among the players.");
+  }
+
+  return {
+    caseFile,
+    hands: Array.from({ length: playerCount }, (_, index) =>
+      remainingCards.slice(index * cardsPerPlayer, (index + 1) * cardsPerPlayer),
+    ),
+  };
+}
+
+export function assignAnonymousHands(
+  players: Player[],
+  anonymousHands: string[][],
+) {
+  if (players.length !== anonymousHands.length) {
+    throw new Error("There must be exactly one anonymous hand for each player.");
+  }
+  const assignments = secureShuffle(
+    anonymousHands.map((cards, index) => ({ cards, handNumber: index + 1 })),
+  );
+
+  return {
+    hands: Object.fromEntries(
+      players.map((player, index) => [player.id, [...assignments[index].cards]]),
+    ) as Record<string, string[]>,
+    handNumbers: Object.fromEntries(
+      players.map((player, index) => [player.id, assignments[index].handNumber]),
+    ) as Record<string, number>,
+  };
 }
 
 export function validateDistribution(
